@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import os
 import re
@@ -19,10 +20,13 @@ try:
 except Exception:  # pragma: no cover
     pytesseract = None
 
-APP_VERSION = "13.0.0"
+APP_VERSION = "14.0.0"
 MAX_PDF_BYTES = int(os.getenv("MAX_PDF_BYTES", str(15 * 1024 * 1024)))
 OCR_LANG = os.getenv("OCR_LANG", "ben+eng")
 OCR_SCALE = float(os.getenv("OCR_SCALE", "3.2"))
+EXTRACT_TIMEOUT_SECONDS = float(os.getenv("EXTRACT_TIMEOUT_SECONDS", "120"))
+MAX_CONCURRENT_EXTRACTS = max(1, int(os.getenv("MAX_CONCURRENT_EXTRACTS", "1")))
+EXTRACT_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_EXTRACTS)
 
 DEFAULT_ORIGINS = [
     "https://sbtechinfo.liveblog365.com",
@@ -475,7 +479,7 @@ def extract_document(pdf_bytes: bytes) -> dict[str, Any]:
 
     return {
         "ok": True,
-        "engine": "python-pymupdf-visual-ocr-v13",
+        "engine": "python-pymupdf-visual-ocr-v14",
         "version": APP_VERSION,
         "ocr_available": tesseract_available(),
         "pages": doc.page_count,
@@ -488,17 +492,17 @@ def extract_document(pdf_bytes: bytes) -> dict[str, Any]:
 def root() -> dict[str, Any]:
     return {
         "ok": True,
-        "engine": "python-pymupdf-visual-ocr-v13",
+        "engine": "python-pymupdf-visual-ocr-v14",
         "version": APP_VERSION,
         "message": "NID Bengali OCR API is running. Use /health or POST /extract.",
     }
 
 
 @app.get("/health")
-def health() -> dict[str, Any]:
+async def health() -> dict[str, Any]:
     return {
         "ok": True,
-        "engine": "python-pymupdf-visual-ocr-v13",
+        "engine": "python-pymupdf-visual-ocr-v14",
         "version": APP_VERSION,
         "pymupdf": fitz.VersionBind,
         "tesseract": tesseract_available(),
@@ -517,7 +521,19 @@ async def extract(file: UploadFile = File(...)) -> dict[str, Any]:
     if not pdf_bytes.startswith(b"%PDF"):
         raise HTTPException(status_code=400, detail="ফাইলটি valid PDF নয়।")
     try:
-        return extract_document(pdf_bytes)
+        # IMPORTANT: PyMuPDF table analysis + Tesseract are synchronous CPU /
+        # subprocess work. Running them directly inside this async route blocks
+        # Uvicorn's event loop, which makes Render's /health check time out and
+        # can restart the free instance mid-request. Keep the event loop free by
+        # doing extraction in a worker thread. One heavy job at a time also
+        # prevents the small free instance from being overloaded.
+        async with EXTRACT_SEMAPHORE:
+            return await asyncio.wait_for(
+                asyncio.to_thread(extract_document, pdf_bytes),
+                timeout=EXTRACT_TIMEOUT_SECONDS,
+            )
+    except asyncio.TimeoutError as e:
+        raise HTTPException(status_code=504, detail="PDF processing timeout হয়েছে। আবার চেষ্টা করুন।") from e
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
     except Exception as e:

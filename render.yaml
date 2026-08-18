@@ -15,3 +15,7 @@ services:
         value: "3.2"
       - key: MAX_PDF_BYTES
         value: "15728640"
+      - key: MAX_CONCURRENT_EXTRACTS
+        value: "1"
+      - key: EXTRACT_TIMEOUT_SECONDS
+        value: "120"
