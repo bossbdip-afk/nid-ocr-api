@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: sbtechinfo-nid-ocr-api
+    runtime: docker
+    plan: free
+    region: singapore
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    envVars:
+      - key: ALLOWED_ORIGINS
+        value: https://sbtechinfo.liveblog365.com
+      - key: OCR_LANG
+        value: ben+eng
+      - key: OCR_SCALE
+        value: "3.2"
+      - key: MAX_PDF_BYTES
+        value: "15728640"
